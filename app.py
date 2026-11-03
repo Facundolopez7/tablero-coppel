@@ -1,5 +1,5 @@
 """
-Tablero de Cumplimiento de Metas · Zona Coppel (Con Registro en Tiempo Real y PDF)
+Tablero de Cumplimiento de Metas · Zona Coppel (Con Control Proporcional Al Día y PDF)
 ---------------------------------------------------------------------------------
 """
 
@@ -12,6 +12,8 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 import io
+from datetime import datetime
+import calendar
 
 st.set_page_config(
     page_title="Cumplimiento Coppel · Zona",
@@ -52,7 +54,6 @@ def ordenar(valores, canonicos):
 
 # ------------------------------------------------------------------ Inicializar Estado de Datos
 if "df_base" not in st.session_state:
-    # Generar demo inicial
     rng = np.random.default_rng(2026)
     tamano = {"77": 1.00, "110": 1.60, "203": 0.70, "668": 1.30, "851": 0.90, "6678": 0.55, "6806": 1.90}
     base = {INDICADORES[0]: 1200, INDICADORES[1]: 800, INDICADORES[2]: 450, INDICADORES[3]: 1500000}
@@ -80,64 +81,78 @@ def preparar(df: pd.DataFrame) -> pd.DataFrame:
     for col in ("Meta", "Real"):
         df[col] = pd.to_numeric(df[col], errors="coerce")
     df = df.dropna().groupby(["Tienda", "Indicador"], as_index=False)[["Meta", "Real"]].sum()
-    df["Cumplimiento (%)"] = (df["Real"] / df["Meta"]) * 100
     return df
 
+# ------------------------------------------------------------------ Cálculo de Fechas Dinámicas
+hoy = datetime.now()
+dia_actual = hoy.day
+ultimo_dia_mes = calendar.monthrange(hoy.year, hoy.month)[1]
+
+# ------------------------------------------------------------------ Filtros Laterales (Mover arriba para usar variables globales)
+st.sidebar.header("Filtros de Zona")
+
+# Filtro interactivo del día del mes evaluado
+dia_evaluado = st.sidebar.slider(
+    "Día del mes a evaluar:", 
+    min_value=1, 
+    max_value=ultimo_dia_mes, 
+    value=min(dia_actual, ultimo_dia_mes)
+)
+
+st.sidebar.write(f"Evaluando ritmo a **{dia_evaluado}/{ultimo_dia_mes} días** del mes.")
+
 # ------------------------------------------------------------------ Función para Reporte PDF
-def generar_pdf(df_datos):
+def generar_pdf(df_datos, dia_ev, total_dias):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter, title="Reporte Coppel")
     story = []
     styles = getSampleStyleSheet()
     
-    # Estilos de texto
-    title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontSize=18, leading=22, textColor=colors.HexColor("#1F6FEB"), spaceAfter=15)
+    title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontSize=16, leading=20, textColor=colors.HexColor("#1F6FEB"), spaceAfter=15)
     text_style = ParagraphStyle('TextStyle', parent=styles['Normal'], fontSize=10, leading=14)
     
-    story.append(Paragraph("<b>Reporte de Cumplimiento de Metas — Zona Coppel</b>", title_style))
-    story.append(Paragraph("Resultados consolidados de los 4 indicadores clave de la zona.", text_style))
+    story.append(Paragraph(f"<b>Reporte de Cumplimiento de Metas — Zona Coppel</b>", title_style))
+    story.append(Paragraph(f"Resultados calculados proporcionalmente al <b>Día {dia_ev} de {total_dias}</b> del mes.", text_style))
     story.append(Spacer(1, 15))
     
-    # Construcción de la tabla
-    tabla_data = [["Tienda", "Indicador", "Meta", "Real", "% Cumpl.", "Estatus"]]
+    tabla_data = [["Tienda", "Indicador", "Meta Mes", "Real", "% Cumpl. Mes", "Meta al Día", "% Cumpl. al Día"]]
     for _, fila in df_datos.iterrows():
-        pct = (fila['Real'] / fila['Meta']) * 100
-        estatus_texto = "Verde" if pct >= 100 else "Amarillo" if pct >= 85 else "Naranja" if pct >= 60 else "Rojo"
+        meta_dia = (fila['Meta'] / total_dias) * dia_ev
+        cumpl_mes = (fila['Real'] / fila['Meta']) * 100
+        cumpl_dia = (fila['Real'] / meta_dia) * 100 if meta_dia > 0 else 0.0
         
-        # Formato numérico
         f_meta = f"${fila['Meta']:,.0f}" if fila['Indicador'] == "Ventas en Coppel.com" else f"{fila['Meta']:,.0f}"
         f_real = f"${fila['Real']:,.0f}" if fila['Indicador'] == "Ventas en Coppel.com" else f"{fila['Real']:,.0f}"
+        f_meta_dia = f"${meta_dia:,.0f}" if fila['Indicador'] == "Ventas en Coppel.com" else f"{meta_dia:,.0f}"
         
         tabla_data.append([
             fila['Tienda'],
             fila['Indicador'],
             f_meta,
             f_real,
-            f"{pct:.1f}%",
-            estatus_texto
+            f"{cumpl_mes:.1f}%",
+            f_meta_dia,
+            f"{cumpl_dia:.1f}%"
         ])
     
-    t = Table(tabla_data, colWidths=[50, 150, 80, 80, 60, 60])
+    t = Table(tabla_data, colWidths=[40, 140, 65, 65, 65, 65, 65])
     t.setStyle(TableStyle([
         ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#1F6FEB")),
         ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
         ('ALIGN', (0,0), (-1,-1), 'CENTER'),
         ('BOTTOMPADDING', (0,0), (-1,0), 6),
         ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
-        ('FONTSIZE', (0,0), (-1,-1), 9),
+        ('FONTSIZE', (0,0), (-1,-1), 8),
     ]))
     story.append(t)
-    
-    # Descargo de responsabilidad obligatorio para salud/financiero si aplica (Mantenido por estándar)
-    story.append(Spacer(1, 20))
     doc.build(story)
     buffer.seek(0)
     return buffer
 
 # ------------------------------------------------------------------ Interfaz Gráfica
-st.title("📊 Tablero Zona Coppel — En Tiempo Real")
+st.title("📊 Tablero Zona Coppel — Ritmo de Avance Diario")
 
-# Sección 1: Carga y Captura en Tiempo Real
+# Captura en Tiempo Real
 col_carga, col_captura = st.columns([1, 1])
 
 with col_carga:
@@ -151,15 +166,13 @@ with col_carga:
                 st.error(f"Error: {e}")
 
 with col_captura:
-    with st.expander("➕ Registro de Avances en Tiempo Real", expanded=True):
+    with st.expander("➕ Registro de Avances en Tiempo Real", expanded=False):
         t_form = st.selectbox("Tienda que reporta:", TIENDAS, key="t_form")
         i_form = st.selectbox("Indicador:", INDICADORES, key="i_form")
-        
         label_unidad = "Monto en Pesos ($):" if i_form == "Ventas en Coppel.com" else "Cantidad (Unidades):"
         valor_sumar = st.number_input(label_unidad, min_value=1, value=1, step=1)
         
         if st.button("⚡ Registrar Impacto Inmediato"):
-            # Buscar la fila y sumar el real en tiempo real
             idx = (st.session_state.df_base["Tienda"] == t_form) & (st.session_state.df_base["Indicador"] == i_form)
             if idx.any():
                 st.session_state.df_base.loc[idx, "Real"] += valor_sumar
@@ -167,54 +180,51 @@ with col_captura:
             else:
                 st.error("No se encontró la combinación de tienda/indicador.")
 
-# Procesar datos calculados
+# Procesar datos consolidados
 df = st.session_state.df_base.copy()
-df["Cumplimiento (%)"] = (df["Real"] / df["Meta"]) * 100
 
-# ------------------------------------------------------------------ Filtros Laterales
-st.sidebar.header("Filtros de Zona")
+# ------------------------------------------------------------------ Completar Filtros Laterales
 tienda_sel = st.sidebar.selectbox("Seleccionar Tienda:", [TODA_LA_ZONA] + ordenar(df["Tienda"].unique(), TIENDAS))
 ind_sel = st.sidebar.selectbox("Seleccionar Indicador:", [TODOS_IND] + ordenar(df["Indicador"].unique(), INDICADORES))
 
-# Botón para descargar PDF en la barra lateral
+# Botón para descargar PDF
 st.sidebar.write("---")
-pdf_data = generar_pdf(df)
+pdf_data = generar_pdf(df, dia_evaluado, ultimo_dia_mes)
 st.sidebar.download_button(
     label="📥 Descargar Reporte PDF",
     data=pdf_data,
-    file_name="Reporte_Zona_Coppel.pdf",
+    file_name=f"Reporte_Zona_Coppel_Dia_{dia_evaluado}.pdf",
     mime="application/pdf"
 )
 
-# ------------------------------------------------------------------ KPIs Visuales
-st.subheader("📈 Resumen de Zona")
+# ------------------------------------------------------------------ KPIs Visuales (Ajustados al Ritmo Diario)
+st.subheader(f"📈 Cumplimiento Acumulado al Día {dia_evaluado}")
 df_resumen = df if tienda_sel == TODA_LA_ZONA else df[df["Tienda"] == tienda_sel]
 
 for i, ind in enumerate(INDICADORES):
     d_ind = df_resumen[df_resumen["Indicador"] == ind]
     if not d_ind.empty:
-        total_meta = d_ind["Meta"].sum()
+        total_meta_mes = d_ind["Meta"].sum()
         total_real = d_ind["Real"].sum()
-        cumplimiento = (total_real / total_meta) * 100
+        
+        # Meta calculada proporcional al día seleccionado
+        total_meta_dia = (total_meta_mes / ultimo_dia_mes) * dia_evaluado
+        cumplimiento_dia = (total_real / total_meta_dia) * 100 if total_meta_dia > 0 else 0
+        
         formato_real = f"${total_real:,.0f}" if i == 3 else f"{total_real:,.0f}"
-        st.metric(label=f"{ind}", value=f"{cumplimiento:.1f}%", delta=f"Actual: {formato_real}")
+        formato_meta_dia = f"${total_meta_dia:,.0f}" if i == 3 else f"{total_meta_dia:,.0f}"
+        
+        st.metric(
+            label=f"{ind} (% Ritmo Diario)", 
+            value=f"{cumplimiento_dia:.1f}%", 
+            delta=f"Llevas: {formato_real} de {formato_meta_dia} presupuestados"
+        )
 
-# Gráficas dinámicas simplificadas para renderizado móvil veloz
+# Gráficas dinámicas ajustadas
 def graficar_movil(df_plot, ind):
-    d = df_plot[df_plot["Indicador"] == ind]
+    d = df_plot[df_plot["Indicador"] == ind].copy()
+    d["Meta_Dia"] = (d["Meta"] / ultimo_dia_mes) * dia_evaluado
+    
     fig = go.Figure()
-    fig.add_bar(x=d["Tienda"], y=d["Meta"], name="Meta", marker_color="#9AA5B1")
-    fig.add_bar(x=d["Tienda"], y=d["Real"], name="Real", marker_color="#1F6FEB")
-    fig.update_layout(title=f"Meta vs Real: {ind}", barmode="group", height=320, margin=dict(t=50, b=10, l=10, r=10))
-    st.plotly_chart(fig, use_container_width=True, key=f"chart_{ind}")
-
-st.write("---")
-if ind_sel == TODOS_IND:
-    for ind in INDICADORES:
-        graficar_movil(df, ind)
-else:
-    graficar_movil(df, ind_sel)
-
-# Tabla final resumida
-st.subheader("📋 Tabla Detallada")
-st.dataframe(df_resumen[["Tienda", "Indicador", "Meta", "Real", "Cumplimiento (%)"]], use_container_width=True)
+    fig.add_bar(x=d["Tienda"], y=d["Meta_Dia"], name="Meta Proporcional al Día", marker_color="#9AA5B1")
+    fig.add_bar(x=d["Tienda"], y=d["Real"], name="Real Avanzado", marker_color="#1F6FEB")
