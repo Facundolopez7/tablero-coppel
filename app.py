@@ -133,9 +133,8 @@ def preparar(df: pd.DataFrame) -> pd.DataFrame:
 
 # ------------------------------------------------------------------ Gráficas
 def graficas(df: pd.DataFrame, ind: str, tienda_sel: str) -> None:
-    """Dos gráficas para un indicador. Si hay una tienda seleccionada, se resalta."""
+    """Dos gráficas para un indicador en columnas responsivas para celular."""
     d = df[df["Indicador"] == ind]
-    col1, col2 = st.columns(2)
 
     # 1) Barras agrupadas: Meta vs Real
     op = [1.0 if tienda_sel in (TODA_LA_ZONA, t) else 0.3 for t in d["Tienda"]]
@@ -145,14 +144,13 @@ def graficas(df: pd.DataFrame, ind: str, tienda_sel: str) -> None:
     fig1.add_bar(x=d["Tienda"], y=d["Real"], name="Real",
                  marker=dict(color="#1F6FEB", opacity=op))
     fig1.update_layout(
-        title=f"Meta vs. Real · {ind}", barmode="group", height=420,
+        title=f"Meta vs. Real · {ind}", barmode="group", height=400,
         xaxis=dict(type="category", title="Tienda"),
         yaxis=dict(tickformat=",.0f"),
-        legend=dict(orientation="h", y=1.12, x=0),
+        legend=dict(orientation="h", y=1.15, x=0),
         margin=dict(t=80, b=10, l=10, r=10),
     )
-    with col1:
-        st.plotly_chart(fig1, key=f"meta_real_{ind}")
+    st.plotly_chart(fig1, key=f"meta_real_{ind}", use_container_width=True)
 
     # 2) Ranking de % de cumplimiento (mayor a menor)
     r = d.sort_values("Cumplimiento (%)", ascending=False)
@@ -167,28 +165,26 @@ def graficas(df: pd.DataFrame, ind: str, tienda_sel: str) -> None:
     fig2.add_hline(y=100, line_dash="dash", line_color="#6B7280",
                    annotation_text="Meta 100%", annotation_position="top left")
     fig2.update_layout(
-        title=f"Ranking de cumplimiento (%) · {ind}", height=420,
+        title=f"Ranking de cumplimiento (%) · {ind}", height=400,
         xaxis=dict(type="category", title="Tienda"),
         yaxis=dict(title="% de cumplimiento", range=[0, max(115, r["Cumplimiento (%)"].max() * 1.15)]),
         margin=dict(t=80, b=10, l=10, r=10), showlegend=False,
     )
-    with col2:
-        st.plotly_chart(fig2, key=f"ranking_{ind}")
+    st.plotly_chart(fig2, key=f"ranking_{ind}", use_container_width=True)
 
 
 # ------------------------------------------------------------------ Interfaz
 st.title("📊 Tablero de Cumplimiento de Metas — Zona Coppel")
 
 # 1) Carga dinámica de datos
-with st.expander("📁 Cargar datos del mes (Excel o CSV)", expanded=True):
+with st.expander("📁 Cargar datos del mes (Excel o CSV)", expanded=False):
     archivo = st.file_uploader(
         "Archivo con las columnas: Tienda, Indicador, Meta, Real",
         type=["xlsx", "xlsm", "csv"],
     )
     st.caption(
         "Las metas pueden cambiar cada mes: solo sube el archivo actualizado. "
-        "Si no subes nada, se muestran datos ficticios (Modo Demo). "
-        "Si hay varias filas por Tienda + Indicador, se suman."
+        "Si no subes nada, se muestran datos ficticios (Modo Demo)."
     )
     st.download_button(
         "⬇️ Descargar plantilla de ejemplo (CSV)",
@@ -205,70 +201,50 @@ if archivo is not None:
         st.error(f"No se pudo procesar el archivo: {e}")
         st.stop()
 else:
-    df = preparar(generar_demo())  # 2) Modo Demo
-    st.info("🧪 Modo Demo: estás viendo datos ficticios. Sube tu archivo para ver los datos reales.")
+    df = preparar(generar_demo())
 
-tiendas = ordenar(df["Tienda"], TIENDAS)
-indicadores = ordenar(df["Indicador"], INDICADORES)
+# ------------------------------------------------------------------ Filtros (Menú Lateral)
+st.sidebar.header("Filtros de Zona")
+tiendas_disponibles = [TODA_LA_ZONA] + ordenar(df["Tienda"].unique(), TIENDAS)
+tienda_sel = st.sidebar.selectbox("Seleccionar Tienda:", tiendas_disponibles)
 
-# 3) Filtros interactivos
-st.sidebar.header("🔎 Filtros")
-tienda_sel = st.sidebar.selectbox("Tienda", [TODA_LA_ZONA] + tiendas)
-ind_sel = st.sidebar.selectbox("Indicador", indicadores + [TODOS_IND])
-st.sidebar.caption(
-    "Las tarjetas superiores siempre muestran la Zona completa. "
-    "En las gráficas, la tienda elegida se resalta; la tabla se filtra."
-)
+indicadores_disponibles = [TODOS_IND] + ordenar(df["Indicador"].unique(), INDICADORES)
+ind_sel = st.sidebar.selectbox("Seleccionar Indicador:", indicadores_disponibles)
 
-# 4) Resumen ejecutivo de la Zona (no depende de los filtros)
-st.subheader("Resumen ejecutivo de la Zona")
-cols = st.columns(len(indicadores))
-for col, ind in zip(cols, indicadores):
-    d = df[df["Indicador"] == ind]
-    promedio = d["Cumplimiento (%)"].mean()
-    ponderado = d["Real"].sum() / d["Meta"].sum() * 100
-    col.metric(
-        label=ind,
-        value=f"{promedio:.1f}%",
-        delta=f"{promedio - 100:+.1f} pts vs. 100%",
-        help=(f"Promedio simple del % de cumplimiento de {len(d)} tiendas. "
-              f"Ponderado por meta (Σ Real / Σ Meta): {ponderado:.1f}%."),
-    )
+# ------------------------------------------------------------------ Resumen Ejecutivo (KPIs)
+st.subheader("📈 Resumen General de Cumplimiento")
 
-st.divider()
+# Filtrado para cálculos globales
+df_resumen = df if tienda_sel == TODA_LA_ZONA else df[df["Tienda"] == tienda_sel]
 
-# 5) Gráficas
-st.subheader("Visualización")
+# Mostrar KPIs de forma adaptativa para móviles (apilados verticalmente en pantallas pequeñas)
+for i, ind in enumerate(INDICADORES):
+    d_ind = df_resumen[df_resumen["Indicador"] == ind]
+    if not d_ind.empty:
+        total_meta = d_ind["Meta"].sum()
+        total_real = d_ind["Real"].sum()
+        cumplimiento = (total_real / total_meta) * 100
+        
+        # Formato visual
+        formato_real = f"${total_real:,.0f}" if i == 3 else f"{total_real:,.0f}"
+        st.metric(
+            label=f"{ind} (% Cumplimiento)",
+            value=f"{cumplimiento:.1f}%",
+            delta=f"Real: {formato_real}"
+        )
+
+# ------------------------------------------------------------------ Gráficos y Tablas
+st.write("---")
 if ind_sel == TODOS_IND:
-    for tab, ind in zip(st.tabs(indicadores), indicadores):
-        with tab:
+    for ind in INDICADORES:
+        if ind in df["Indicador"].values:
             graficas(df, ind, tienda_sel)
 else:
-    graficas(df, ind_sel, tienda_sel)
+    if ind_sel in df["Indicador"].values:
+        graficas(df, ind_sel, tienda_sel)
 
-st.divider()
+# Tabla de datos detallada
+st.subheader("📋 Datos Detallados de la Zona")
+df_tabla = df_resumen.copy()
+df_tabla["Estatus"] = df_tabla["Cumplimiento (%)"].map(lambda x: SEMAFORO[nivel(x)][0])
 
-# 6) Tabla de semáforo
-st.subheader("Semáforo de cumplimiento")
-st.markdown(
-    "🟢 **≥ 100%** &nbsp;&nbsp; 🟡 **85% – 99.99%** &nbsp;&nbsp; "
-    "🟠 **60% – 84.99%** &nbsp;&nbsp; 🔴 **< 60%**"
-)
-
-tabla = df.copy()
-if tienda_sel != TODA_LA_ZONA:
-    tabla = tabla[tabla["Tienda"] == tienda_sel]
-if ind_sel != TODOS_IND:
-    tabla = tabla[tabla["Indicador"] == ind_sel]
-tabla["Semáforo"] = tabla["Cumplimiento (%)"].map(lambda p: SEMAFORO[nivel(p)][0])
-
-
-def pintar_fila(fila):
-    _, fondo, texto, _ = SEMAFORO[nivel(fila["Cumplimiento (%)"])]
-    return [f"background-color: {fondo}; color: {texto}"] * len(fila)
-
-
-estilo = tabla.style.apply(pintar_fila, axis=1).format(
-    {"Meta": "{:,.0f}", "Real": "{:,.0f}", "Cumplimiento (%)": "{:.2f}%"}
-)
-st.dataframe(estilo, hide_index=True, height=min(38 * (len(tabla) + 1) + 3, 800))
