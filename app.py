@@ -6,10 +6,11 @@ Ejecutar:  streamlit run app_mejorado.py
 Requiere:  pip install streamlit pandas numpy plotly openpyxl reportlab
 """
 
+import calendar
 import io
 import sqlite3
 from contextlib import closing
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import numpy as np
@@ -66,6 +67,19 @@ def nivel(pct: float) -> str:
 
 def fmt(valor: float, indicador: str) -> str:
     return f"${valor:,.0f}" if indicador == VENTAS else f"{valor:,.0f}"
+
+
+def con_avance_diario(df: pd.DataFrame, fecha: date):
+    """Prorratea la meta mensual a la fecha de corte.
+
+    Meta al día = Meta mensual × día de corte ÷ días del mes
+    Cumplimiento al día (%) = Real ÷ Meta al día × 100
+    """
+    dias_mes = calendar.monthrange(fecha.year, fecha.month)[1]
+    out = df.copy()
+    out["Meta al día"] = out["Meta"] * fecha.day / dias_mes
+    out["Cumplimiento al día (%)"] = out["Real"] / out["Meta al día"] * 100
+    return out, dias_mes
 
 
 def ordenar(valores, canonicos):
@@ -390,6 +404,14 @@ with col_captura:
 st.sidebar.header("Filtros de Zona")
 tienda_sel = st.sidebar.selectbox("Tienda:", [TODA_LA_ZONA] + tiendas)
 ind_sel = st.sidebar.selectbox("Indicador:", [TODOS_IND] + indicadores)
+fecha_corte = st.sidebar.date_input(
+    "Fecha de corte:", value=date.today(), format="DD/MM/YYYY",
+    help="Día hasta el que se calcula la meta al día de la tabla (por defecto, hoy).",
+)
+base_semaforo = st.sidebar.radio(
+    "Colorear semáforo según:", ["Avance al día", "Meta mensual"],
+    help="Define qué porcentaje pinta las filas de la tabla de semáforo.",
+)
 st.sidebar.button("🔄 Actualizar datos", help="Vuelve a leer los registros de todas las tiendas.")
 st.sidebar.divider()
 
@@ -436,26 +458,45 @@ st.divider()
 
 # ------------------------------------------------------------------ Tabla de semáforo
 st.subheader("📋 Semáforo de cumplimiento")
+
+tabla = df_alcance if ind_sel == TODOS_IND else df_alcance[df_alcance["Indicador"] == ind_sel]
+tabla, dias_mes = con_avance_diario(tabla, fecha_corte)
+tabla = tabla.rename(columns={
+    "Meta": "Meta mensual",
+    "Cumplimiento (%)": "Cumpl. mensual (%)",
+    "Cumplimiento al día (%)": "Cumpl. al día (%)",
+})
+
+col_semaforo = "Cumpl. al día (%)" if base_semaforo == "Avance al día" else "Cumpl. mensual (%)"
+tabla["Semáforo"] = tabla[col_semaforo].map(lambda p: SEMAFORO[nivel(p)][0])
+tabla = tabla[["Tienda", "Indicador", "Meta mensual", "Meta al día", "Real",
+               "Cumpl. mensual (%)", "Cumpl. al día (%)", "Semáforo"]]
+
+st.caption(
+    f"Corte al **día {fecha_corte.day} de {dias_mes}** ({fecha_corte:%d/%m/%Y}). "
+    f"Meta al día = Meta mensual ÷ {dias_mes} × {fecha_corte.day}, es decir, a esta fecha "
+    f"debería llevarse el **{fecha_corte.day / dias_mes:.0%}** de la meta mensual. "
+    f"Color de las filas según: **{base_semaforo.lower()}**."
+)
 st.markdown(
     "🟢 **≥ 100%** &nbsp;&nbsp; 🟡 **85% – 99.99%** &nbsp;&nbsp; "
     "🟠 **60% – 84.99%** &nbsp;&nbsp; 🔴 **< 60%**"
 )
 
-tabla = df_alcance if ind_sel == TODOS_IND else df_alcance[df_alcance["Indicador"] == ind_sel]
-tabla = tabla.copy()
-tabla["Semáforo"] = tabla["Cumplimiento (%)"].map(lambda p: SEMAFORO[nivel(p)][0])
-
 
 def pintar_fila(fila):
-    _, fondo, texto, _ = SEMAFORO[nivel(fila["Cumplimiento (%)"])]
+    _, fondo, texto, _ = SEMAFORO[nivel(fila[col_semaforo])]
     return [f"background-color: {fondo}; color: {texto}"] * len(fila)
 
 
-estilo = tabla.style.apply(pintar_fila, axis=1).format(
-    {"Meta": "{:,.0f}", "Real": "{:,.0f}", "Cumplimiento (%)": "{:.2f}%"}
-)
+estilo = tabla.style.apply(pintar_fila, axis=1).format({
+    "Meta mensual": "{:,.0f}", "Meta al día": "{:,.0f}", "Real": "{:,.0f}",
+    "Cumpl. mensual (%)": "{:.2f}%", "Cumpl. al día (%)": "{:.2f}%",
+})
 filas_ventas = tabla.index[tabla["Indicador"] == VENTAS]
 if len(filas_ventas):
-    estilo = estilo.format("${:,.0f}", subset=pd.IndexSlice[filas_ventas, ["Meta", "Real"]])
+    estilo = estilo.format(
+        "${:,.0f}", subset=pd.IndexSlice[filas_ventas, ["Meta mensual", "Meta al día", "Real"]]
+    )
 
 st.dataframe(estilo, hide_index=True, height=min(38 * (len(tabla) + 1) + 3, 800))
